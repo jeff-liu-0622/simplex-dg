@@ -1,5 +1,9 @@
 import numpy as np
 
+from core.geometry.sphere_manifold_topology import (
+    create_projected_octahedron_sphere_mesh,
+    map_reference_nodes_to_projected_sphere,
+)
 from core.mesh_octahedron import create_octahedral_layout_mesh
 from core.geometry.sphere_mapping import map_unit_triangle_to_sphere
 from core.operators import build_local_operators
@@ -75,6 +79,45 @@ def build_octahedral_sphere_diagnostics(nsub=4, order=4, R=1.0):
     return engine, diagnostics
 
 
+def build_projected_octahedral_sphere_diagnostics(nsub=4, order=4, R=1.0):
+    engine = build_local_operators(N=order, n=order, rule="table1")
+    _, _, _, EToV, patch_ids, nodes_xyz = create_projected_octahedron_sphere_mesh(
+        nsub=nsub,
+        R=R,
+    )
+    element_xyz = map_reference_nodes_to_projected_sphere(
+        nodes_xyz=nodes_xyz,
+        EToV=EToV,
+        r=engine.r,
+        s=engine.s,
+        R=R,
+    )
+
+    diagnostics = []
+
+    for k in range(EToV.shape[0]):
+        xyz_nodes = element_xyz[k]
+        geometry = compute_manifold_geometry(engine, xyz_nodes)
+        diagnostics.append((xyz_nodes, geometry))
+
+    return engine, diagnostics
+
+
+def compute_global_surface_area(nsub=4, order=4, R=1.0):
+    engine, diagnostics = build_octahedral_sphere_diagnostics(
+        nsub=nsub,
+        order=order,
+        R=R,
+    )
+
+    total_area = 0.0
+
+    for _, geometry in diagnostics:
+        total_area += engine.area * np.sum(engine.w_s * geometry["J"])
+
+    return total_area
+
+
 def test_sphere_nodes_lie_on_radius_R():
     R = 1.7
     _, diagnostics = build_octahedral_sphere_diagnostics(nsub=4, order=4, R=R)
@@ -133,13 +176,7 @@ def test_contravariant_basis_is_biorthogonal_to_covariant_basis():
 
 def test_global_surface_area_approximates_sphere_area():
     R = 1.0
-    engine, diagnostics = build_octahedral_sphere_diagnostics(nsub=4, order=4, R=R)
-
-    total_area = 0.0
-
-    for _, geometry in diagnostics:
-        total_area += engine.area * np.sum(engine.w_s * geometry["J"])
-
+    total_area = compute_global_surface_area(nsub=4, order=4, R=R)
     exact_area = 4.0 * np.pi * R**2
     relative_error = abs(total_area - exact_area) / exact_area
 
@@ -151,6 +188,69 @@ def test_global_surface_area_approximates_sphere_area():
 
     assert relative_error < 1.0e-3, (
         f"sphere area relative error too large: {relative_error:.3e}"
+    )
+
+
+def test_surface_area_convergence_table():
+    R = 1.0
+    order = 4
+    nsubs = [2, 4, 8, 16]
+    exact_area = 4.0 * np.pi * R**2
+
+    rows = []
+    previous_error = None
+
+    print("\n" + "=" * 82)
+    print("Manifold sphere surface area convergence")
+    print("=" * 82)
+    print(
+        f"{'nsub':>8s} "
+        f"{'K':>8s} "
+        f"{'h':>12s} "
+        f"{'area':>18s} "
+        f"{'rel_error':>14s} "
+        f"{'order':>10s}"
+    )
+    print("-" * 82)
+
+    for nsub in nsubs:
+        area = compute_global_surface_area(nsub=nsub, order=order, R=R)
+        relative_error = abs(area - exact_area) / exact_area
+
+        if previous_error is None:
+            observed_order = None
+            order_text = "-"
+        else:
+            observed_order = np.log(previous_error / relative_error) / np.log(2.0)
+            order_text = f"{observed_order:.4f}"
+
+        rows.append((nsub, area, relative_error, observed_order))
+
+        print(
+            f"{nsub:8d} "
+            f"{8 * nsub * nsub:8d} "
+            f"{1.0 / nsub:12.4e} "
+            f"{area:18.10e} "
+            f"{relative_error:14.6e} "
+            f"{order_text:>10s}"
+        )
+
+        previous_error = relative_error
+
+    print("-" * 82)
+
+    errors = np.array([row[2] for row in rows])
+    orders = np.array([row[3] for row in rows[1:]])
+
+    assert np.all(np.isfinite(errors))
+    assert errors[-1] < errors[0], (
+        "surface area error did not improve from nsub=2 to nsub=16"
+    )
+    assert errors[-1] < 1.0e-4, (
+        f"finest surface area relative error too large: {errors[-1]:.3e}"
+    )
+    assert np.all(orders > 0.0), (
+        f"expected positive observed orders, got {orders}"
     )
 
 
@@ -170,6 +270,9 @@ def run_all_tests():
 
     test_global_surface_area_approximates_sphere_area()
     print("global surface area approximates 4*pi*R^2")
+
+    test_surface_area_convergence_table()
+    print("surface area convergence table completed")
 
     print("=" * 80)
     print("test_manifold_geometry_sphere.py passed")
