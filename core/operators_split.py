@@ -61,6 +61,78 @@ def mapped_gradient_split_2d(q, Dr, Ds, rx, sx, ry, sy):
     return dqdx, dqdy
 
 
+def _expand_volume_quantity_to_nodes(value, shape):
+    """
+    Expand an elementwise scalar array of shape (K,) or (K,1)
+    to volume nodal shape (K,Np).
+    """
+    value = np.asarray(value)
+
+    if value.ndim == 0:
+        return value * np.ones(shape)
+
+    if value.ndim == 1:
+        return value[:, None] * np.ones((1, shape[1]))
+
+    if value.ndim == 2 and value.shape[1] == 1:
+        return value * np.ones((1, shape[1]))
+
+    return value
+
+
+def mapped_divergence_split_2d(q, Dr, Ds, xr, xs, yr, ys, J, cx, cy):
+    """
+    Compute the reference-style split-form mapped divergence.
+
+    Physical advection flux:
+
+        f(q) = (a q, b q)
+
+    Contravariant coefficients:
+
+        alpha = ys a - xs b
+        beta  = -yr a + xr b
+
+    Split form:
+
+        div(f) = 1/J * 1/2 [
+            D_r(alpha q) + alpha D_r(q) + q D_r(alpha)
+            + D_s(beta q) + beta D_s(q) + q D_s(beta)
+        ]
+    """
+    q = np.asarray(q)
+    shape = q.shape
+
+    xr_e = _expand_volume_quantity_to_nodes(xr, shape)
+    xs_e = _expand_volume_quantity_to_nodes(xs, shape)
+    yr_e = _expand_volume_quantity_to_nodes(yr, shape)
+    ys_e = _expand_volume_quantity_to_nodes(ys, shape)
+    J_e = _expand_volume_quantity_to_nodes(J, shape)
+
+    a = _expand_volume_quantity_to_nodes(cx, shape)
+    b = _expand_volume_quantity_to_nodes(cy, shape)
+
+    alpha = ys_e * a - xs_e * b
+    beta = -yr_e * a + xr_e * b
+
+    qr = (Dr @ q.T).T
+    qs = (Ds @ q.T).T
+
+    alpha_q = alpha * q
+    beta_q = beta * q
+
+    Dr_alpha_q = (Dr @ alpha_q.T).T
+    Ds_beta_q = (Ds @ beta_q.T).T
+
+    Dr_alpha = (Dr @ alpha.T).T
+    Ds_beta = (Ds @ beta.T).T
+
+    div_r = Dr_alpha_q + alpha * qr + q * Dr_alpha
+    div_s = Ds_beta_q + beta * qs + q * Ds_beta
+
+    return 0.5 * (div_r + div_s) / J_e
+
+
 def _edge_boundary_values(engine, q, edge_id):
     """
     Extract boundary values of q on one edge.
@@ -124,8 +196,9 @@ def compute_split_rhs(q, t, **kwargs):
     engine:
         ReferenceElement
 
-    rx, sx, ry, sy, J:
-        Geometry metrics, shape (K,)
+    xr, xs, yr, ys, rx, sx, ry, sy, J:
+        Geometry metrics, shape (K,). xr, xs, yr, ys are used by the
+        mapped divergence split form.
 
     nx, ny:
         Outward unit normals, shape (K,3)
@@ -175,6 +248,10 @@ def compute_split_rhs(q, t, **kwargs):
     ry = kwargs["ry"]
     sy = kwargs["sy"]
     J = kwargs["J"]
+    xr = kwargs.get("xr", sy * J)
+    xs = kwargs.get("xs", -ry * J)
+    yr = kwargs.get("yr", -sx * J)
+    ys = kwargs.get("ys", rx * J)
 
     nx = kwargs["nx"]
     ny = kwargs["ny"]
@@ -210,17 +287,18 @@ def compute_split_rhs(q, t, **kwargs):
     # ------------------------------------------------------------
     # 1. Volume split-form RHS
     # ------------------------------------------------------------
-    dqdx, dqdy = mapped_gradient_split_2d(
+    rhs = -mapped_divergence_split_2d(
         q=q,
         Dr=engine.Dr,
         Ds=engine.Ds,
-        rx=rx,
-        sx=sx,
-        ry=ry,
-        sy=sy,
+        xr=xr,
+        xs=xs,
+        yr=yr,
+        ys=ys,
+        J=J,
+        cx=cx,
+        cy=cy,
     )
-
-    rhs = -(cx * dqdx + cy * dqdy)
 
     # ------------------------------------------------------------
     # 2. Surface SDG penalty

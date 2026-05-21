@@ -108,7 +108,7 @@ def run_lsrk_pure_time_test():
     
     VX, VY, EToV = create_square_mesh(NX, NY)
     EToV_coords_x, EToV_coords_y = VX[EToV], VY[EToV]
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
     nx, ny, sJ = compute_face_metrics(EToV_coords_x, EToV_coords_y)
     r, s = engine.r, engine.s
     x_nodes = 0.5 * (-(r+s)*EToV_coords_x[:,0:1] + (1+r)*EToV_coords_x[:,1:2] + (1+s)*EToV_coords_x[:,2:3])
@@ -116,7 +116,7 @@ def run_lsrk_pure_time_test():
     vmapM, vmapP = build_pure_geometric_maps(x_nodes, y_nodes, engine.fmask)
     
     kwargs = {
-        'engine': engine, 'rx': rx, 'sx': sx, 'ry': ry, 'sy': sy, 'J': J,
+        'engine': engine, 'xr': xr, 'xs': xs, 'yr': yr, 'ys': ys, 'rx': rx, 'sx': sx, 'ry': ry, 'sy': sy, 'J': J,
         'nx': nx, 'ny': ny, 'sJ': sJ, 'vmapM': vmapM, 'vmapP': vmapP,
         'cx': cx, 'cy': cy, 'x_nodes': x_nodes, 'y_nodes': y_nodes
     }

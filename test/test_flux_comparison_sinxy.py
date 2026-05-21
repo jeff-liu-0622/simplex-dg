@@ -40,7 +40,7 @@ def build_periodic_planar_case(N_poly=4, n_quad=4, divisions=6, cx=1.0, cy=1.0):
     EToV_x = VX[EToV]
     EToV_y = VY[EToV]
 
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
     nx, ny, edge_lengths, _ = compute_face_metrics(EToV_x, EToV_y)
 
     r, s = engine.r, engine.s
@@ -77,6 +77,10 @@ def build_periodic_planar_case(N_poly=4, n_quad=4, divisions=6, cx=1.0, cy=1.0):
 
     base_kwargs = {
         "engine": engine,
+        "xr": xr,
+        "xs": xs,
+        "yr": yr,
+        "ys": ys,
         "rx": rx,
         "sx": sx,
         "ry": ry,

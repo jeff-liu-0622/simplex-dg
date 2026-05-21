@@ -4,10 +4,11 @@ from core.geometry.connectivity import build_connectivity
 from core.geometry.sphere_mapping import map_unit_triangle_to_sphere
 from core.mesh_octahedron import create_octahedral_layout_mesh
 from core.operators import build_local_operators
+from core.geometry.manifold_metrics import compute_manifold_geometry
+from core.operators_sphere import compute_manifold_skew_volume_rhs
 from test.test_manifold_geometry_sphere import (
     build_octahedral_sphere_diagnostics,
     build_projected_octahedral_sphere_diagnostics,
-    compute_manifold_geometry,
     map_reference_nodes_to_subelement,
 )
 from test.test_manifold_velocity_sphere import solid_body_rotation_velocity
@@ -35,39 +36,6 @@ OCTAHEDRON_VERTICES = np.array(
     ],
     dtype=float,
 )
-
-
-def compute_manifold_skew_volume_rhs(engine, geometry, V3D, q):
-    """
-    Compute the manifold skew-symmetric volume RHS diagnostic.
-
-    This is volume-only: no surface flux, no sphere RHS object, and no time
-    integration are introduced here.
-    """
-    J = geometry["J"]
-    a_contra_1 = geometry["a_contra_1"]
-    a_contra_2 = geometry["a_contra_2"]
-
-    u_tilde = np.sum(a_contra_1 * V3D, axis=1)
-    v_tilde = np.sum(a_contra_2 * V3D, axis=1)
-
-    Dr_q = engine.Dr @ q
-    Ds_q = engine.Ds @ q
-
-    div_Jv = engine.Dr @ (J * u_tilde) + engine.Ds @ (J * v_tilde)
-
-    rhs_vol = (
-        -0.5 / J * (
-            engine.Dr @ (J * u_tilde * q)
-            + engine.Ds @ (J * v_tilde * q)
-        )
-        -0.5 * (u_tilde * Dr_q + v_tilde * Ds_q)
-        -0.5 * q / J * div_Jv
-    )
-
-    divJv_over_J = div_Jv / J
-
-    return rhs_vol, divJv_over_J, u_tilde, v_tilde
 
 
 def build_octahedral_sphere_diagnostics_with_metadata(nsub=8, order=4, R=1.0):

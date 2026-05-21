@@ -55,7 +55,7 @@ def run_single_mesh(n, engine, N_poly, cx, cy, T_final, cfl_like, sample_count):
     EToV_x = VX[EToV]
     EToV_y = VY[EToV]
 
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
     nx, ny, edge_lengths, sJ = compute_face_metrics(EToV_x, EToV_y)
 
     r, s = engine.r, engine.s
@@ -96,6 +96,10 @@ def run_single_mesh(n, engine, N_poly, cx, cy, T_final, cfl_like, sample_count):
 
     kwargs = {
         "engine": engine,
+        "xr": xr,
+        "xs": xs,
+        "yr": yr,
+        "ys": ys,
         "rx": rx,
         "sx": sx,
         "ry": ry,

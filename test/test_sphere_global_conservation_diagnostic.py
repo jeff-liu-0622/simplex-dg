@@ -5,8 +5,8 @@ from test.test_sphere_flux_jump_diagnostic import (
     collect_face_jump_stats,
     recompute_volume_rhs_for_state,
 )
-from test.test_sphere_full_rhs_constant import (
-    _aligned_neighbor_face_indices,
+from core.rhs_sphere import (
+    aligned_neighbor_face_indices as _aligned_neighbor_face_indices,
     compute_sphere_surface_penalty,
 )
 from test.test_sphere_full_rhs_smooth_snapshot import (
@@ -211,6 +211,7 @@ def compute_global_conservation_diagnostic(
             state,
             flux_type=flux_type,
             alpha_lf=alpha_lf,
+            surface_mode="old",
         )
         max_abs_vn_orientation_error = np.nan
     elif surface_mode == "conservative":

@@ -5,10 +5,10 @@ from core.geometry.sphere_manifold_topology import (
     create_projected_octahedron_sphere_mesh,
     map_reference_nodes_to_projected_sphere,
 )
+from core.geometry.manifold_metrics import compute_manifold_geometry
+from core.operators_sphere import compute_manifold_skew_volume_rhs
 from core.operators import build_local_operators
 from core.rhs_sphere import compute_sphere_surface_penalty as _core_surface_penalty
-from test.test_manifold_constant_rhs_sphere import compute_manifold_skew_volume_rhs
-from test.test_manifold_geometry_sphere import compute_manifold_geometry
 from test.test_manifold_velocity_sphere import solid_body_rotation_velocity
 
 

@@ -115,7 +115,7 @@ def run_stationary_xy_test():
     EToV_coords_x = VX[EToV]
     EToV_coords_y = VY[EToV]
 
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
 
     # New face_metrics interface:
     #   nx, ny, edge_lengths, sJ
@@ -139,6 +139,10 @@ def run_stationary_xy_test():
 
     kwargs = {
         "engine": engine,
+        "xr": xr,
+        "xs": xs,
+        "yr": yr,
+        "ys": ys,
         "rx": rx,
         "sx": sx,
         "ry": ry,

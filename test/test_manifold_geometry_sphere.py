@@ -6,6 +6,7 @@ from core.geometry.sphere_manifold_topology import (
 )
 from core.mesh_octahedron import create_octahedral_layout_mesh
 from core.geometry.sphere_mapping import map_unit_triangle_to_sphere
+from core.geometry.manifold_metrics import compute_manifold_geometry
 from core.operators import build_local_operators
 
 
@@ -25,33 +26,6 @@ def map_reference_nodes_to_subelement(r, s, tri_vertices):
     eta = v0[1] + a * (v1[1] - v0[1]) + b * (v2[1] - v0[1])
 
     return xi, eta
-
-
-def compute_manifold_geometry(engine, xyz_nodes):
-    """
-    Compute local manifold geometry directly from 3D nodal coordinates.
-
-    This is a diagnostic helper only. It intentionally does not build a
-    sphere RHS or alter the planar DG implementation.
-    """
-    a1 = engine.Dr @ xyz_nodes
-    a2 = engine.Ds @ xyz_nodes
-
-    normal_area = np.cross(a1, a2)
-    J = np.linalg.norm(normal_area, axis=1)
-    n = normal_area / J[:, None]
-
-    a_contra_1 = np.cross(a2, n) / J[:, None]
-    a_contra_2 = np.cross(n, a1) / J[:, None]
-
-    return {
-        "a1": a1,
-        "a2": a2,
-        "J": J,
-        "n": n,
-        "a_contra_1": a_contra_1,
-        "a_contra_2": a_contra_2,
-    }
 
 
 def build_octahedral_sphere_diagnostics(nsub=4, order=4, R=1.0):

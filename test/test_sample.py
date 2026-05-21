@@ -119,7 +119,7 @@ def run_temporal_order_test():
     
     VX, VY, EToV = create_square_mesh(NX, NY)
     EToV_x, EToV_y = VX[EToV], VY[EToV]
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
     nx, ny, sJ = compute_face_metrics(EToV_x, EToV_y)
     r, s = engine.r, engine.s
     x_nodes = 0.5 * (-(r+s)*EToV_x[:,0:1] + (1+r)*EToV_x[:,1:2] + (1+s)*EToV_x[:,2:3])
@@ -136,7 +136,7 @@ def run_temporal_order_test():
         return np.sin(2.0 * np.pi * (x - cx * t) / domain_width)
 
     kwargs = {
-        'engine': engine, 'rx': rx, 'sx': sx, 'ry': ry, 'sy': sy, 'J': J,
+        'engine': engine, 'xr': xr, 'xs': xs, 'yr': yr, 'ys': ys, 'rx': rx, 'sx': sx, 'ry': ry, 'sy': sy, 'J': J,
         'nx': nx, 'ny': ny, 'sJ': sJ, 'vmapM': vmapM, 'vmapP': vmapP,
         'cx': cx, 'cy': cy, 'x_nodes': x_nodes, 'y_nodes': y_nodes,
         'lift_mode': 'exact', # 啟動精確反質量矩陣

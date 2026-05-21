@@ -97,7 +97,7 @@ def run_exchange_test():
     EToV_coords_x, EToV_coords_y = VX[EToV], VY[EToV]
 
     # 計算幾何與座標
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
     nx, ny, sJ = compute_face_metrics(EToV_coords_x, EToV_coords_y)
     r, s = engine.r, engine.s
     x_nodes = 0.5 * (-(r + s) * EToV_coords_x[:, 0:1] + (1 + r) * EToV_coords_x[:, 1:2] + (1 + s) * EToV_coords_x[:, 2:3])

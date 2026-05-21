@@ -112,7 +112,7 @@ def run_h_refinement_test(nx, ny):
     EToV_x = VX[EToV]
     EToV_y = VY[EToV]
 
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
     nx_f, ny_f, edge_lengths, sJ = compute_face_metrics(EToV_x, EToV_y)
 
     r, s = engine.r, engine.s
@@ -142,6 +142,10 @@ def run_h_refinement_test(nx, ny):
 
     kwargs = {
         "engine": engine,
+        "xr": xr,
+        "xs": xs,
+        "yr": yr,
+        "ys": ys,
         "rx": rx,
         "sx": sx,
         "ry": ry,

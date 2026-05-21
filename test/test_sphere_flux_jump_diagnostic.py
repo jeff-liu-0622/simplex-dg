@@ -1,6 +1,6 @@
 import numpy as np
 
-from test.test_manifold_constant_rhs_sphere import compute_manifold_skew_volume_rhs
+from core.operators_sphere import compute_manifold_skew_volume_rhs
 from test.test_sphere_full_rhs_constant import (
     _aligned_neighbor_face_indices,
     compute_sphere_surface_penalty,

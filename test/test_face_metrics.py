@@ -15,9 +15,13 @@ def test_reference_triangle_metrics():
     x = np.array([[-1.0, 1.0, -1.0]])
     y = np.array([[-1.0, -1.0, 1.0]])
 
-    rx, sx, ry, sy, J = compute_volume_metrics(x, y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(x, y)
 
     assert abs(J[0] - 1.0) < 1e-12
+    assert abs(xr[0] - 1.0) < 1e-12
+    assert abs(xs[0] - 0.0) < 1e-12
+    assert abs(yr[0] - 0.0) < 1e-12
+    assert abs(ys[0] - 1.0) < 1e-12
     assert abs(rx[0] - 1.0) < 1e-12
     assert abs(sx[0] - 0.0) < 1e-12
     assert abs(ry[0] - 0.0) < 1e-12

@@ -80,7 +80,7 @@ def run_trace_exchange_sinxy_h_convergence():
         EToV_x = VX[EToV]
         EToV_y = VY[EToV]
 
-        rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+        xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
         nx, ny, edge_lengths, sJ = compute_face_metrics(EToV_x, EToV_y)
 
         r, s = engine.r, engine.s
@@ -131,6 +131,10 @@ def run_trace_exchange_sinxy_h_convergence():
 
         kwargs = {
             "engine": engine,
+            "xr": xr,
+            "xs": xs,
+            "yr": yr,
+            "ys": ys,
             "rx": rx,
             "sx": sx,
             "ry": ry,

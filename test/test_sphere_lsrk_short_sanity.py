@@ -1,54 +1,14 @@
 import numpy as np
 
 from core.time_integration import lsrk54_step
-from test.test_manifold_constant_rhs_sphere import compute_manifold_skew_volume_rhs
-from test.test_sphere_full_rhs_constant import compute_sphere_surface_penalty
+from core.operators_sphere import compute_sphere_rhs
 from test.test_sphere_full_rhs_smooth_snapshot import (
     _weighted_integral,
     build_projected_sphere_smooth_state,
 )
 
 
-def compute_sphere_full_rhs_for_state(
-    q,
-    _t,
-    state,
-    flux_type="upwind",
-    alpha_lf=1.0,
-    surface_mode="conservative_scaled",
-):
-    """
-    Diagnostic-only sphere RHS callback for LSRK stages.
-
-    Geometry and velocity are fixed. The current nodal q is supplied by the
-    time integrator and is used for both volume and surface terms.
-    """
-    engine = state["engine"]
-    q = np.asarray(q)
-    volume_rhs = np.zeros_like(q)
-
-    for k, geometry in enumerate(state["geometry"]):
-        rhs_vol, _, u_local, v_local = compute_manifold_skew_volume_rhs(
-            engine=engine,
-            geometry=geometry,
-            V3D=state["V3D"][k],
-            q=q[k],
-        )
-        volume_rhs[k, :] = rhs_vol
-        state["u_tilde"][k, :] = u_local
-        state["v_tilde"][k, :] = v_local
-
-    state["q"] = q
-    state["volume_rhs"] = volume_rhs
-
-    surface = compute_sphere_surface_penalty(
-        state,
-        flux_type=flux_type,
-        alpha_lf=alpha_lf,
-        surface_mode=surface_mode,
-    )
-
-    return volume_rhs + surface["surface_rhs"]
+compute_sphere_full_rhs_for_state = compute_sphere_rhs
 
 
 def discrete_mass(state, q):

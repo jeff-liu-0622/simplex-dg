@@ -19,7 +19,7 @@ def compute_volume_metrics(x, y):
 
     Returns
     -------
-    rx, sx, ry, sy, J
+    xr, xs, yr, ys, rx, sx, ry, sy, J
 
     Notes
     -----
@@ -55,7 +55,7 @@ def compute_volume_metrics(x, y):
     ry = -xs / J
     sy = xr / J
 
-    return rx, sx, ry, sy, J
+    return xr, xs, yr, ys, rx, sx, ry, sy, J
 
 
 def compute_face_metrics(x, y):

@@ -41,7 +41,7 @@ def run_exact_trace_test():
     # --------------------------------------------------------
 
     # 3. 計算幾何變換矩陣
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_coords_x, EToV_coords_y)
     nx, ny, sJ = compute_face_metrics(EToV_coords_x, EToV_coords_y)
     
     # 4. 映射節點到實體空間 (x, y)

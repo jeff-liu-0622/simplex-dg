@@ -2563,3 +2563,84 @@ Final-report status:
   fourth-order LSRK54 behavior against a small-dt reference.
 - Limitation: sphere h-convergence is monotone but not yet ideal high-order;
   one-period / long-time conservative SAT remains future work.
+
+### Exchange-cache old-mode diagnostic completed
+
+Added `test/test_sphere_exchange_cache_old_diagnostic.py`.
+
+This is a diagnostic-only comparison inspired by the external
+`manifold_rhs_exchange` pipeline.  It does not replace the main RHS and does
+not modify the conservative or conservative_scaled helpers.
+
+The new diagnostic builds a small old-style sphere exchange cache containing:
+
+- face trace pairing from the projected 3D topology;
+- paired high-order face-node ordering;
+- face quadrature weights;
+- side-local `J_face`, `u_tilde_face`, and `v_tilde_face`;
+- reference face normals used by the current old mode.
+
+It then keeps the old penalty formula unchanged:
+
+```text
+vn_sJ   = J_face * (nr*u_tilde + ns*v_tilde)
+C       = 0, |vn_sJ|, or alpha_lf*|vn_sJ|
+penalty = 0.5 * (vn_sJ - C) * (qM - qP)
+```
+
+Comparison results:
+
+```text
+q=1 RHS comparison, nsub=8, N=4:
+flux       alpha   current_max_rhs  exchange_max_rhs  max_rhs_diff  max_surface_diff
+central    1.0    4.666533e-05     4.666533e-05     0.000000e+00  0.000000e+00
+upwind     1.0    4.666533e-05     4.666533e-05     0.000000e+00  0.000000e+00
+lf         1.0    4.666533e-05     4.666533e-05     0.000000e+00  0.000000e+00
+lf         1.5    4.666533e-05     4.666533e-05     0.000000e+00  0.000000e+00
+```
+
+```text
+jump-flux comparison, nsub=8, N=4, eps=1e-2:
+max_abs_jump_q = 2.000000e-02
+rms_jump_q     = 1.632993e-02
+
+flux       alpha   current_surf   exchange_surf   current_mass   exchange_mass   max_rhs_diff
+central    1.0    1.025478e+00   1.025478e+00   3.346282e-15   3.346282e-15   0.000000e+00
+upwind     1.0    1.992467e+00   1.992467e+00  -4.973044e-03  -4.973044e-03   0.000000e+00
+lf         1.0    1.992467e+00   1.992467e+00  -4.973044e-03  -4.973044e-03   0.000000e+00
+lf         1.5    2.498639e+00   2.498639e+00  -7.459566e-03  -7.459566e-03   0.000000e+00
+```
+
+```text
+small-mesh spectrum comparison, nsub=2, N=2:
+flux       alpha   ndof   current_max_real  exchange_max_real  max_operator_diff
+central    1.0     320    6.952305e-01     6.952305e-01      0.000000e+00
+upwind     1.0     320    3.107124e-01     3.107124e-01      0.000000e+00
+lf         1.0     320    3.107124e-01     3.107124e-01      0.000000e+00
+lf         1.5     320    2.508078e-01     2.508078e-01      0.000000e+00
+```
+
+```text
+short-time Gaussian comparison, nsub=4, N=3, n_quad=4, T=1e-2, dt=2.5e-4:
+flux       alpha   current_L2     exchange_L2    current_Linf   exchange_Linf  max_q_diff
+upwind     1.0    1.127114e-03   1.127114e-03   3.013824e-02   3.013824e-02   0.000000e+00
+lf         1.0    1.127114e-03   1.127114e-03   3.013824e-02   3.013824e-02   0.000000e+00
+lf         1.5    1.113667e-03   1.113667e-03   2.972679e-02   2.972679e-02   0.000000e+00
+```
+
+Interpretation:
+
+- The exchange-cache old-mode diagnostic exactly reproduces the current
+  old-mode RHS, spectrum, and short-time Gaussian result to roundoff.
+- This confirms that adding a cache/trace-policy layer alone does not change
+  the operator; it is primarily an organization and performance/stability
+  infrastructure step.
+- The external pipeline may still differ through its global LF definition,
+  fixed N=4 operators, and trace/lift implementation details, but the current
+  old-mode formula is already equivalent to the minimal cached version tested
+  here.
+
+Validation:
+
+- `test_sphere_exchange_cache_old_diagnostic.py` passed.
+- `compileall test/test_sphere_exchange_cache_old_diagnostic.py` passed.

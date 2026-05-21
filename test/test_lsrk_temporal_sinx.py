@@ -178,7 +178,7 @@ def run_temporal_order_test():
     EToV_x = VX[EToV]
     EToV_y = VY[EToV]
 
-    rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
+    xr, xs, yr, ys, rx, sx, ry, sy, J = compute_volume_metrics(EToV_x, EToV_y)
 
     # New interface:
     #   nx, ny, edge_lengths, sJ
@@ -213,6 +213,10 @@ def run_temporal_order_test():
 
     kwargs = {
         "engine": engine,
+        "xr": xr,
+        "xs": xs,
+        "yr": yr,
+        "ys": ys,
         "rx": rx,
         "sx": sx,
         "ry": ry,
