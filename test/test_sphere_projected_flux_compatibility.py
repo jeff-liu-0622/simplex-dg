@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 
 from core.geometry.connectivity import build_connectivity
@@ -421,12 +423,43 @@ def sphere_mesh_h_from_state(state):
     return float(state["h"])
 
 
-def run_gaussian_t01_case(nsub, rhs_mode, dt=1.0e-3, final_time=1.0e-1):
+def cfl_dt_from_state(state, cfl=0.25, order=4):
+    h_min = sphere_mesh_h_from_state(state)
+    max_speed = float(np.max(np.linalg.norm(state["V3D"], axis=2)))
+
+    if max_speed <= 0.0:
+        return {
+            "cfl": float(cfl),
+            "h_min": h_min,
+            "max_speed": max_speed,
+            "dt": np.inf,
+        }
+
+    return {
+        "cfl": float(cfl),
+        "h_min": h_min,
+        "max_speed": max_speed,
+        "dt": float(cfl * h_min / (((order + 1) ** 2) * max_speed)),
+    }
+
+
+def run_gaussian_t01_case(
+    nsub,
+    rhs_mode,
+    dt=None,
+    final_time=1.0e-1,
+    cfl=0.25,
+):
     state = initialize_reference_gaussian_state(nsub=nsub, order=4)
+    dt_info = cfl_dt_from_state(state, cfl=cfl, order=4)
+    if dt is None:
+        dt = dt_info["dt"]
+
     q = state["q"].copy()
     q_initial = q.copy()
     res = np.zeros_like(q)
     t = 0.0
+    steps = 0
 
     if rhs_mode == "core_conservative_scaled":
         rhs_func = compute_sphere_rhs
@@ -455,6 +488,7 @@ def run_gaussian_t01_case(nsub, rhs_mode, dt=1.0e-3, final_time=1.0e-1):
             **rhs_kwargs,
         )
         t += dt_step
+        steps += 1
 
     state["q"] = q
     q_exact = exact_gaussian_on_state(state, final_time)
@@ -468,11 +502,115 @@ def run_gaussian_t01_case(nsub, rhs_mode, dt=1.0e-3, final_time=1.0e-1):
         "nsub": nsub,
         "K": int(q.shape[0]),
         "h": sphere_mesh_h_from_state(state),
+        "cfl": dt_info["cfl"],
+        "h_min": dt_info["h_min"],
+        "max_speed": dt_info["max_speed"],
+        "dt": float(dt),
+        "steps": int(steps),
         "L2_error": weighted_l2_error(state, error),
         "max_error": float(np.max(np.abs(error))),
         "mass_error": float(mass_final - mass_initial),
         "energy_change": float(energy_final - energy_initial),
         "has_nonfinite": bool(not np.all(np.isfinite(q))),
+    }
+
+
+def time_average(func, repeat=5):
+    timings = []
+    last = None
+
+    for _ in range(repeat):
+        start = time.perf_counter()
+        last = func()
+        timings.append(time.perf_counter() - start)
+
+    return float(np.mean(timings)), last
+
+
+def compute_volume_rhs_for_profile(state, q):
+    engine = state["engine"]
+    volume_rhs = np.zeros_like(q)
+
+    for k, geometry in enumerate(state["geometry"]):
+        rhs_vol, _, u_local, v_local = compute_manifold_skew_volume_rhs(
+            engine=engine,
+            geometry=geometry,
+            V3D=state["V3D"][k],
+            q=q[k],
+        )
+        volume_rhs[k, :] = rhs_vol
+        state["u_tilde"][k, :] = u_local
+        state["v_tilde"][k, :] = v_local
+
+    state["q"] = q
+    state["volume_rhs"] = volume_rhs
+    return volume_rhs
+
+
+def profile_current_rhs(nsub=8, repeat=5):
+    state = initialize_reference_gaussian_state(nsub=nsub, order=4)
+    q = state["q"].copy()
+    res = np.zeros_like(q)
+    dt_info = cfl_dt_from_state(state, cfl=0.25, order=4)
+    dt = dt_info["dt"]
+
+    compute_volume_rhs_for_profile(state, q)
+
+    volume_time, _ = time_average(
+        lambda: compute_volume_rhs_for_profile(state, q),
+        repeat=repeat,
+    )
+    surface_time, _ = time_average(
+        lambda: compute_sphere_surface_penalty(
+            state,
+            flux_type="upwind",
+            alpha_lf=1.0,
+            surface_mode="conservative_scaled",
+        )["surface_rhs"],
+        repeat=repeat,
+    )
+    total_rhs_time, _ = time_average(
+        lambda: compute_sphere_rhs(
+            q,
+            0.0,
+            state=state,
+            flux_type="upwind",
+            surface_mode="conservative_scaled",
+        ),
+        repeat=repeat,
+    )
+    lsrk_time, _ = time_average(
+        lambda: lsrk54_step(
+            q,
+            res,
+            0.0,
+            dt,
+            compute_sphere_rhs,
+            state=state,
+            flux_type="upwind",
+            surface_mode="conservative_scaled",
+        ),
+        repeat=repeat,
+    )
+
+    component_sum = volume_time + surface_time
+    bottleneck = "volume"
+    if surface_time > volume_time:
+        bottleneck = "surface"
+
+    return {
+        "nsub": nsub,
+        "K": int(q.shape[0]),
+        "repeat": repeat,
+        "dt": dt,
+        "volume_time": volume_time,
+        "surface_time": surface_time,
+        "component_sum": component_sum,
+        "total_rhs_time": total_rhs_time,
+        "lsrk_step_time": lsrk_time,
+        "surface_fraction": surface_time / component_sum if component_sum > 0.0 else np.nan,
+        "volume_fraction": volume_time / component_sum if component_sum > 0.0 else np.nan,
+        "bottleneck": bottleneck,
     }
 
 
@@ -768,7 +906,8 @@ def test_reference_gaussian_t01_projected_line_comparison():
     print("Reference-style Gaussian T=0.1 RHS comparison diagnostic")
     print("=" * 132)
     print("q0=exp(-(dist/width)^2), width=1/sqrt(10), center=(1,0,0)")
-    print("Omega=(-sin(-pi/4), 0, cos(-pi/4)), dt=1e-3, flux_type=upwind")
+    print("Omega=(-sin(-pi/4), 0, cos(-pi/4)), flux_type=upwind")
+    print("dt = CFL * h_min / ((N+1)^2 * max_speed), CFL=0.25, N=4")
     print("A: core compute_sphere_rhs(surface_mode='conservative_scaled')")
     print("B: diagnostic projected_line surface RHS with noDiv face convention")
 
@@ -777,7 +916,8 @@ def test_reference_gaussian_t01_projected_line_comparison():
         print(rhs_mode)
         print("-" * 132)
         print(
-            f"{'nsub':>6s} {'K':>8s} {'h':>13s} "
+            f"{'nsub':>6s} {'K':>8s} {'CFL':>8s} {'h_min':>13s} "
+            f"{'max_speed':>11s} {'dt':>12s} {'steps':>7s} "
             f"{'L2_error':>16s} {'L2_rate':>10s} "
             f"{'max_error':>16s} {'max_rate':>10s} "
             f"{'mass_error':>16s} {'energy_change':>16s}"
@@ -804,7 +944,12 @@ def test_reference_gaussian_t01_projected_line_comparison():
             previous = row
 
             print(
-                f"{row['nsub']:6d} {row['K']:8d} {row['h']:13.6e} "
+                f"{row['nsub']:6d} {row['K']:8d} "
+                f"{row['cfl']:8.3f} "
+                f"{row['h_min']:13.6e} "
+                f"{row['max_speed']:11.6e} "
+                f"{row['dt']:12.6e} "
+                f"{row['steps']:7d} "
                 f"{row['L2_error']:16.6e} "
                 f"{'---' if L2_rate is None else f'{L2_rate:.4f}':>10s} "
                 f"{row['max_error']:16.6e} "
@@ -823,8 +968,51 @@ def test_reference_gaussian_t01_projected_line_comparison():
     print("=" * 132)
 
 
+def test_current_rhs_profiling_diagnostic():
+    print("\n" + "=" * 132)
+    print("Current conservative_scaled RHS profiling diagnostic")
+    print("=" * 132)
+    print("No numba. Times are mean wall-clock seconds over repeated calls.")
+    print(
+        f"{'nsub':>6s} {'K':>8s} {'repeat':>8s} {'dt':>12s} "
+        f"{'volume_rhs':>14s} {'surface':>14s} {'total_rhs':>14s} "
+        f"{'lsrk_step':>14s} {'vol%':>8s} {'surf%':>8s} {'bottleneck':>12s}"
+    )
+    print("-" * 132)
+
+    rows = []
+    for nsub in (8, 16):
+        row = profile_current_rhs(nsub=nsub, repeat=5)
+        rows.append(row)
+        print(
+            f"{row['nsub']:6d} {row['K']:8d} {row['repeat']:8d} "
+            f"{row['dt']:12.6e} "
+            f"{row['volume_time']:14.6e} "
+            f"{row['surface_time']:14.6e} "
+            f"{row['total_rhs_time']:14.6e} "
+            f"{row['lsrk_step_time']:14.6e} "
+            f"{100.0 * row['volume_fraction']:7.2f}% "
+            f"{100.0 * row['surface_fraction']:7.2f}% "
+            f"{row['bottleneck']:>12s}"
+        )
+
+    print("=" * 132)
+
+    for row in rows:
+        for key in (
+            "volume_time",
+            "surface_time",
+            "total_rhs_time",
+            "lsrk_step_time",
+            "surface_fraction",
+            "volume_fraction",
+        ):
+            assert np.isfinite(row[key])
+
+
 if __name__ == "__main__":
     test_sphere_projected_flux_compatibility()
     test_sphere_projected_surface_rhs_equivalence()
     test_sphere_projected_jump_surface_rhs_equivalence()
     test_reference_gaussian_t01_projected_line_comparison()
+    test_current_rhs_profiling_diagnostic()

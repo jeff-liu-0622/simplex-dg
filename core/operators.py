@@ -448,3 +448,29 @@ def build_local_operators(
         Ds=Ds,
     )
 
+def compute_manifold_volume_rhs_fast(q, state):
+    engine = state["engine"]
+
+    J = state["J_array"]
+    J_u = state["J_u"]
+    J_v = state["J_v"]
+    div_Jv = state["div_Jv"]
+
+    Dr = engine.Dr
+    Ds = engine.Ds
+
+    Dr_q = q @ Dr.T
+    Ds_q = q @ Ds.T
+
+    Dr_Juq = (J_u * q) @ Dr.T
+    Ds_Jvq = (J_v * q) @ Ds.T
+
+    rhs_Jq = (
+        -0.5 * (Dr_Juq + Ds_Jvq)
+        -0.5 * (J_u * Dr_q + J_v * Ds_q)
+        -0.5 * q * div_Jv
+    )
+
+    rhs_q = rhs_Jq / J
+
+    return rhs_q

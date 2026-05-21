@@ -1,7 +1,7 @@
 import numpy as np
 
 from core.rhs_sphere import compute_sphere_surface_penalty
-
+from core.operators import compute_manifold_volume_rhs_fast
 """
 Projected 3D manifold sphere operators.
 
@@ -12,14 +12,32 @@ implement the SDG T1-T8 patch-coordinate route.
 
 def compute_manifold_skew_volume_rhs(engine, geometry, V3D, q):
     """
-    Compute the manifold skew-symmetric volume RHS diagnostic.
+    Compute one-element manifold split-form volume RHS.
 
-    This is volume-only: no surface flux, no sphere RHS object, and no time
-    integration are introduced here.
+    Returns
+    -------
+    rhs_Jq:
+        J-weighted volume RHS, i.e. J * q_t(volume).
+
+    rhs_q:
+        Physical nodal RHS q_t(volume).
+
+    u_tilde, v_tilde:
+        Contravariant velocity components.
     """
     J = geometry["J"]
     a_contra_1 = geometry["a_contra_1"]
     a_contra_2 = geometry["a_contra_2"]
+
+    q = np.asarray(q)
+    J = np.asarray(J)
+
+    if q.ndim != 1:
+        raise ValueError(f"q must have shape (Np,), got {q.shape}.")
+    if J.shape != q.shape:
+        raise ValueError(f"J shape {J.shape} must match q shape {q.shape}.")
+    if np.any(J <= 1.0e-14):
+        raise ValueError("Degenerate manifold geometry: J too small.")
 
     u_tilde = np.sum(a_contra_1 * V3D, axis=1)
     v_tilde = np.sum(a_contra_2 * V3D, axis=1)
@@ -29,18 +47,18 @@ def compute_manifold_skew_volume_rhs(engine, geometry, V3D, q):
 
     div_Jv = engine.Dr @ (J * u_tilde) + engine.Ds @ (J * v_tilde)
 
-    rhs_vol = (
+    rhs_Jq = (
         -0.5 * (
             engine.Dr @ (J * u_tilde * q)
             + engine.Ds @ (J * v_tilde * q)
         )
-        -0.5 * (u_tilde * Dr_q + v_tilde * Ds_q)
+        -0.5 * (J * u_tilde * Dr_q + J * v_tilde * Ds_q)
         -0.5 * q * div_Jv
     )
 
-    divJv_over_J = div_Jv / J
+    rhs_q = rhs_Jq / J
 
-    return rhs_vol, divJv_over_J, u_tilde, v_tilde
+    return rhs_Jq, rhs_q, u_tilde, v_tilde
 
 
 def compute_sphere_rhs(
@@ -50,30 +68,13 @@ def compute_sphere_rhs(
     state,
     flux_type="upwind",
     alpha_lf=1.0,
-    surface_mode="conservative_scaled",
+    surface_mode="local",
 ):
-    """
-    Diagnostic projected-sphere RHS callback for LSRK stages.
-
-    Geometry and velocity are fixed. The current nodal q is supplied by the
-    time integrator and is used for both volume and surface terms.
-    """
     del t
 
-    engine = state["engine"]
     q = np.asarray(q)
-    volume_rhs = np.zeros_like(q)
 
-    for k, geometry in enumerate(state["geometry"]):
-        rhs_vol, divJv_over_J, u_local, v_local = compute_manifold_skew_volume_rhs(
-            engine=engine,
-            geometry=geometry,
-            V3D=state["V3D"][k],
-            q=q[k],
-        )
-        volume_rhs[k, :] = divJv_over_J
-        state["u_tilde"][k, :] = u_local
-        state["v_tilde"][k, :] = v_local
+    volume_rhs = compute_manifold_volume_rhs_fast(q, state)
 
     state["q"] = q
     state["volume_rhs"] = volume_rhs

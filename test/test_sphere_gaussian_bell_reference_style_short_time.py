@@ -10,16 +10,17 @@ from core.geometry.sphere_manifold_topology import (
 from core.operators import build_local_operators
 from core.operators_sphere import compute_sphere_rhs
 from core.time_integration import lsrk54_step
+from core.rhs_sphere import build_face_exchange_cache
+from core.rhs_sphere import physical_conormal_flux_on_face
 
-
-def reference_style_omega(u0=1.0, alpha0=-np.pi / 4.0):
+def reference_style_omega(u0=1.0, alpha0=0):
     return u0 * np.array(
         [-np.sin(alpha0), 0.0, np.cos(alpha0)],
         dtype=float,
     )
 
 
-def solid_body_velocity(xyz, u0=1.0, alpha0=-np.pi / 4.0):
+def solid_body_velocity(xyz, u0=1.0, alpha0=0):
     omega = reference_style_omega(u0=u0, alpha0=alpha0)
 
     return np.cross(omega[None, :], xyz)
@@ -59,7 +60,7 @@ def exact_gaussian_bell_reference_style(
     xyz,
     t,
     u0=1.0,
-    alpha0=-np.pi / 4.0,
+    alpha0=0,
     R=1.0,
     center_xyz=(1.0, 0.0, 0.0),
     width=1.0 / np.sqrt(10.0),
@@ -101,11 +102,14 @@ def build_reference_style_state(
     width=1.0 / np.sqrt(10.0),
 ):
     engine = build_local_operators(N=order, n=order, rule="table1")
+
     _, _, _, EToV, patch_ids, nodes_xyz = create_projected_octahedron_sphere_mesh(
         nsub=nsub,
         R=R,
     )
+
     EToE, EToF = build_connectivity(EToV)
+
     element_xyz = map_reference_nodes_to_projected_sphere(
         nodes_xyz=nodes_xyz,
         EToV=EToV,
@@ -114,14 +118,33 @@ def build_reference_style_state(
         R=R,
     )
 
+    K = EToV.shape[0]
+    Np = engine.num_nodes
+
     geometries = []
     velocities = []
-    q = np.zeros((EToV.shape[0], engine.num_nodes))
 
-    for k in range(EToV.shape[0]):
+    q = np.zeros((K, Np))
+
+    # ------------------------------------------------------------
+    # Volume RHS cache
+    # ------------------------------------------------------------
+    J_array = np.zeros((K, Np))
+    u_tilde = np.zeros((K, Np))
+    v_tilde = np.zeros((K, Np))
+    J_u = np.zeros((K, Np))
+    J_v = np.zeros((K, Np))
+    div_Jv = np.zeros((K, Np))
+
+    for k in range(K):
         xyz = element_xyz[k]
-        geometries.append(compute_manifold_geometry(engine, xyz))
-        velocities.append(solid_body_velocity(xyz, u0=u0, alpha0=alpha0))
+
+        geometry = compute_manifold_geometry(engine, xyz)
+        V3D = solid_body_velocity(xyz, u0=u0, alpha0=alpha0)
+
+        geometries.append(geometry)
+        velocities.append(V3D)
+
         q[k, :] = gaussian_bell_reference_style(
             xyz,
             R=R,
@@ -129,7 +152,26 @@ def build_reference_style_state(
             width=width,
         )
 
-    return {
+        # ------------------------------------------------------------
+        # Precompute geometry / velocity quantities.
+        # These do not change during time stepping.
+        # ------------------------------------------------------------
+        J = geometry["J"]
+        a_contra_1 = geometry["a_contra_1"]
+        a_contra_2 = geometry["a_contra_2"]
+
+        u = np.sum(a_contra_1 * V3D, axis=1)
+        v = np.sum(a_contra_2 * V3D, axis=1)
+
+        J_array[k, :] = J
+        u_tilde[k, :] = u
+        v_tilde[k, :] = v
+        J_u[k, :] = J * u
+        J_v[k, :] = J * v
+
+        div_Jv[k, :] = engine.Dr @ (J * u) + engine.Ds @ (J * v)
+
+    state = {
         "engine": engine,
         "EToE": EToE,
         "EToF": EToF,
@@ -137,8 +179,17 @@ def build_reference_style_state(
         "xyz": element_xyz,
         "geometry": geometries,
         "V3D": np.asarray(velocities),
-        "u_tilde": np.zeros_like(q),
-        "v_tilde": np.zeros_like(q),
+
+        # ------------------------------------------------------------
+        # Cached geometry / velocity arrays
+        # ------------------------------------------------------------
+        "u_tilde": u_tilde,
+        "v_tilde": v_tilde,
+        "J_array": J_array,
+        "J_u": J_u,
+        "J_v": J_v,
+        "div_Jv": div_Jv,
+
         "q": q,
         "volume_rhs": np.zeros_like(q),
         "h": projected_sphere_mesh_hmin(nodes_xyz, EToV),
@@ -149,6 +200,51 @@ def build_reference_style_state(
         "width": width,
     }
 
+    # ------------------------------------------------------------
+    # Face exchange cache.
+    # This avoids recomputing face node matching during every RHS call.
+    # ------------------------------------------------------------
+    state["face_cache"] = build_face_exchange_cache(state)
+    Nfp = engine.num_edge_nodes
+    vn_face = np.zeros((K, 3, Nfp))
+
+    face_nodes_M = state["face_cache"]["face_nodes_M"]
+
+    for k in range(K):
+        for f in range(3):
+            nodes = face_nodes_M[k, f]
+            vn_face[k, f, :] = physical_conormal_flux_on_face(
+                state,
+                elem_id=k,
+                face_id=f,
+                nodes=nodes,
+            )
+
+    state["vn_face"] = vn_face
+    # ------------------------------------------------------------
+    # Boundary lift cache.
+    #
+    # Old local surface did:
+    #     lifted = engine.lift_boundary_penalty(p_boundary, edge_lengths=np.ones(3))
+    #
+    # That is equivalent to:
+    #     lifted = (Wb * p_boundary) @ LIFT_B.T
+    #
+    # where:
+    #     LIFT_B = first boundary columns of V M^{-1} V^T
+    #     Wb     = boundary quadrature weights
+    # ------------------------------------------------------------
+    Nb = engine.num_boundary_nodes
+
+    LIFT = engine.V @ engine.invM_modal @ engine.V.T
+    LIFT_B = LIFT[:, :Nb]
+
+    Wb = engine.boundary_weight_diag(edge_lengths=np.ones(3))
+
+    state["LIFT_B"] = LIFT_B
+    state["Wb"] = Wb
+
+    return state
 
 def rate(previous_error, current_error, previous_h, current_h):
     if previous_error is None:
@@ -157,12 +253,36 @@ def rate(previous_error, current_error, previous_h, current_h):
     return np.log(previous_error / current_error) / np.log(previous_h / current_h)
 
 
+def cfl_dt_from_state(state, cfl=0.25):
+    engine = state["engine"]
+    N = int(getattr(engine, "N", 4))
+    h_min = float(state["h"])
+    max_speed = float(np.max(np.linalg.norm(state["V3D"], axis=2)))
+
+    if max_speed <= 0.0:
+        dt_raw = np.inf
+    else:
+        dt_raw = float(cfl * h_min / (((N + 1) ** 2) * max_speed))
+
+    return {
+        "CFL": float(cfl),
+        "N": N,
+        "h_min": h_min,
+        "max_speed": max_speed,
+        "dt_raw": dt_raw,
+    }
+
+
 def run_reference_style_short_time_case(
     nsub,
-    final_time=3.0e-2,
-    dt=5.0e-4,
+    final_time=5.0e-2,
+    cfl=1.0,
 ):
     state = build_reference_style_state(nsub=nsub)
+    dt_info = cfl_dt_from_state(state, cfl=cfl)
+    steps = max(1, int(np.ceil(final_time / dt_info["dt_raw"])))
+    dt = float(final_time / steps)
+
     q_initial = state["q"].copy()
     q = q_initial.copy()
     res = np.zeros_like(q)
@@ -182,7 +302,7 @@ def run_reference_style_short_time_case(
             compute_sphere_rhs,
             state=state,
             flux_type="upwind",
-            surface_mode="conservative_scaled",
+            surface_mode="local_fast",
         )
         t += dt_step
         num_steps += 1
@@ -208,6 +328,10 @@ def run_reference_style_short_time_case(
         "nsub": nsub,
         "K": int(q.shape[0]),
         "h": float(state["h"]),
+        "CFL": dt_info["CFL"],
+        "h_min": dt_info["h_min"],
+        "max_speed": dt_info["max_speed"],
+        "dt_raw": dt_info["dt_raw"],
         "dt": dt,
         "num_steps": num_steps,
         "L2_error": float(weighted_l2_error(state, error)),
@@ -218,8 +342,8 @@ def run_reference_style_short_time_case(
     }
 
 
-def run_reference_style_table(final_time, title):
-    levels = [2, 4, 8]
+def run_reference_style_table(final_time, title, cfl=1.0):
+    levels = [2, 4, 8, 16, 32]
     previous = None
     results = []
 
@@ -235,7 +359,8 @@ def run_reference_style_table(final_time, title):
         flush=True,
     )
     print(
-        f"{'nsub':>8s} {'K':>8s} {'h':>13s} {'dt':>12s} "
+        f"{'nsub':>8s} {'K':>8s} {'h':>13s} {'CFL':>8s} "
+        f"{'h_min':>13s} {'max_speed':>12s} {'dt':>12s} "
         f"{'steps':>8s} {'L2_error':>16s} {'L2_rate':>10s} "
         f"{'max_error':>16s} {'max_rate':>10s} "
         f"{'mass_error':>16s} {'energy_change':>16s}",
@@ -247,6 +372,7 @@ def run_reference_style_table(final_time, title):
         row = run_reference_style_short_time_case(
             nsub=nsub,
             final_time=final_time,
+            cfl=cfl,
         )
         L2_rate = rate(
             None if previous is None else previous["L2_error"],
@@ -263,6 +389,9 @@ def run_reference_style_table(final_time, title):
 
         print(
             f"{row['nsub']:8d} {row['K']:8d} {row['h']:13.6e} "
+            f"{row['CFL']:8.3f} "
+            f"{row['h_min']:13.6e} "
+            f"{row['max_speed']:12.6e} "
             f"{row['dt']:12.6e} {row['num_steps']:8d} "
             f"{row['L2_error']:16.6e} "
             f"{'---' if L2_rate is None else f'{L2_rate:.4f}':>10s} "
@@ -289,24 +418,17 @@ def run_reference_style_table(final_time, title):
     assert results[-1]["max_error"] < results[0]["max_error"]
 
 
-def test_sphere_gaussian_bell_reference_style_short_time():
+def test_sphere_gaussian_bell_reference_style_t05_cfl1():
     run_reference_style_table(
-        final_time=3.0e-2,
-        title="sphere Gaussian bell reference-style short-time diagnostic",
-    )
-
-
-def test_sphere_gaussian_bell_reference_style_medium_short_time():
-    run_reference_style_table(
-        final_time=1.0e-1,
-        title="sphere Gaussian bell reference-style medium-short-time diagnostic",
+        final_time=5.0e-1,
+        title="sphere Gaussian bell reference-style T=0.5 CFL=1 diagnostic",
+        cfl=1.0,
     )
 
 
 def run_all_tests():
-    test_sphere_gaussian_bell_reference_style_short_time()
-    test_sphere_gaussian_bell_reference_style_medium_short_time()
-    print("sphere Gaussian bell reference-style short-time diagnostic passed")
+    test_sphere_gaussian_bell_reference_style_t05_cfl1()
+    print("sphere Gaussian bell reference-style T=0.5 CFL=1 diagnostic passed")
 
 
 if __name__ == "__main__":

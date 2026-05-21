@@ -1,6 +1,48 @@
 import numpy as np
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+except Exception:
+    NUMBA_AVAILABLE = False
 
+if NUMBA_AVAILABLE:
+    @njit(parallel=True, cache=True)
+    def build_p_boundary_all_numba(
+        q,
+        EToE,
+        face_nodes_M,
+        face_nodes_P,
+        vn_face,
+        edge_starts,
+        edge_stops,
+        flux_code,
+        alpha_lf,
+        p_boundary_all,
+    ):
+        K = q.shape[0]
 
+        for kM in prange(K):
+            for fM in range(3):
+                kP = EToE[kM, fM]
+                start = edge_starts[fM]
+                stop = edge_stops[fM]
+
+                for a in range(stop - start):
+                    iM = face_nodes_M[kM, fM, a]
+                    iP = face_nodes_P[kM, fM, a]
+
+                    qM = q[kM, iM]
+                    qP = q[kP, iP]
+                    vn = vn_face[kM, fM, a]
+
+                    if flux_code == 0:      # central
+                        C = 0.0
+                    elif flux_code == 1:    # upwind
+                        C = abs(vn)
+                    else:                   # lf / lax_friedrichs
+                        C = alpha_lf * abs(vn)
+
+                    p_boundary_all[kM, start + a] = 0.5 * (vn - C) * (qM - qP)
 REFERENCE_FACE_NORMALS = np.array(
     [
         [0.0, -1.0],
@@ -362,4 +404,269 @@ def compute_sphere_surface_penalty(
             alpha_lf=alpha_lf,
             face_match_tol=face_match_tol,
         )
+    if surface_mode == "local":
+        return compute_sphere_surface_penalty_local(
+            state,
+            flux_type=flux_type,
+            alpha_lf=alpha_lf,
+            face_match_tol=face_match_tol,
+        )
+    if surface_mode == "local_fast":
+        return compute_sphere_surface_penalty_local_fast(
+        state,
+        flux_type=flux_type,
+        alpha_lf=alpha_lf,
+        face_match_tol=face_match_tol,
+    )
     raise ValueError(f"unknown surface_mode: {surface_mode}")
+
+def compute_sphere_surface_penalty_local(
+    state,
+    flux_type="upwind",
+    alpha_lf=1.0,
+    face_match_tol=1.0e-12,
+):
+    engine = state["engine"]
+    EToE = state["EToE"]
+    q = state["q"]
+
+    face_cache = state["face_cache"]
+    face_nodes_M = face_cache["face_nodes_M"]
+    face_nodes_P = face_cache["face_nodes_P"]
+    max_face_match_error = face_cache["max_face_match_error"]
+
+    surface_rhs = np.zeros_like(q)
+    max_abs_penalty = 0.0
+
+    for kM in range(q.shape[0]):
+        p_boundary = np.zeros(engine.num_boundary_nodes)
+
+        for fM in range(3):
+            kP = int(EToE[kM, fM])
+
+            if kP == kM:
+                raise AssertionError(f"unexpected boundary face ({kM}, {fM})")
+
+            nodes_M = face_nodes_M[kM, fM]
+            nodes_P = face_nodes_P[kM, fM]
+
+            qM = q[kM, nodes_M]
+            qP = q[kP, nodes_P]
+
+            vn = physical_conormal_flux_on_face(
+                state,
+                elem_id=kM,
+                face_id=fM,
+                nodes=nodes_M,
+            )
+
+            if flux_type == "central":
+                C = 0.0
+            elif flux_type == "upwind":
+                C = np.abs(vn)
+            elif flux_type in ("lf", "lax_friedrichs"):
+                C = alpha_lf * np.abs(vn)
+            else:
+                raise ValueError(f"unknown flux_type: {flux_type}")
+
+            penalty = 0.5 * (vn - C) * (qM - qP)
+
+            p_boundary[engine.edge_slices[fM]] = penalty
+            max_abs_penalty = max(
+                max_abs_penalty,
+                float(np.max(np.abs(penalty))),
+            )
+
+        lifted = engine.lift_boundary_penalty(
+            p_boundary,
+            edge_lengths=np.ones(3),
+        )
+
+        surface_rhs[kM, :] = lifted / state["geometry"][kM]["J"]
+
+    if max_face_match_error > face_match_tol:
+        raise AssertionError(
+            "projected sphere face pairing is not physically continuous: "
+            f"max face match error = {max_face_match_error:.3e}"
+        )
+
+    return {
+        "surface_rhs": surface_rhs,
+        "max_face_match_error": max_face_match_error,
+        "max_abs_penalty": max_abs_penalty,
+        "surface_mode": "local",
+    }
+
+def build_face_exchange_cache(state):
+    engine = state["engine"]
+    EToE = state["EToE"]
+    EToF = state["EToF"]
+    xyz = state["xyz"]
+
+    K = EToE.shape[0]
+    Nfp = engine.num_edge_nodes
+
+    face_nodes_M = np.zeros((K, 3, Nfp), dtype=int)
+    face_nodes_P = np.zeros((K, 3, Nfp), dtype=int)
+
+    max_face_match_error = 0.0
+
+    for kM in range(K):
+        for fM in range(3):
+            kP = int(EToE[kM, fM])
+            fP = int(EToF[kM, fM])
+
+            if kP == kM:
+                raise AssertionError(f"unexpected boundary face ({kM}, {fM})")
+
+            nodes_M = face_node_indices(engine, fM)
+            nodes_P = face_node_indices(engine, fP)
+
+            ordering, face_match_error = aligned_neighbor_face_indices(
+                xyz[kM, nodes_M, :],
+                xyz[kP, nodes_P, :],
+            )
+
+            max_face_match_error = max(max_face_match_error, face_match_error)
+
+            face_nodes_M[kM, fM, :] = nodes_M
+            face_nodes_P[kM, fM, :] = nodes_P[ordering]
+
+    return {
+        "face_nodes_M": face_nodes_M,
+        "face_nodes_P": face_nodes_P,
+        "max_face_match_error": max_face_match_error,
+    }
+
+def compute_sphere_surface_penalty_local_fast(
+    state,
+    flux_type="upwind",
+    alpha_lf=1.0,
+    face_match_tol=1.0e-12,
+):
+    """
+    Fast local interface surface penalty.
+
+    This version assumes the following caches already exist in state:
+
+        state["face_cache"]["face_nodes_M"]
+        state["face_cache"]["face_nodes_P"]
+        state["face_cache"]["max_face_match_error"]
+
+        state["vn_face"]
+        state["Wb"]
+        state["LIFT_B"]
+        state["J_array"]
+
+    It fills all boundary penalties first, then lifts all elements at once.
+    """
+    engine = state["engine"]
+    EToE = state["EToE"]
+    q = state["q"]
+
+    face_cache = state["face_cache"]
+    face_nodes_M = face_cache["face_nodes_M"]
+    face_nodes_P = face_cache["face_nodes_P"]
+    max_face_match_error = face_cache["max_face_match_error"]
+
+    if max_face_match_error > face_match_tol:
+        raise AssertionError(
+            "projected sphere face pairing is not physically continuous: "
+            f"max face match error = {max_face_match_error:.3e}"
+        )
+
+    K = q.shape[0]
+    Nb = engine.num_boundary_nodes
+
+    p_boundary_all = np.zeros((K, Nb), dtype=q.dtype)
+
+    edge_starts = np.array(
+        [s.start for s in engine.edge_slices],
+        dtype=np.int64,
+    )
+    edge_stops = np.array(
+        [s.stop for s in engine.edge_slices],
+        dtype=np.int64,
+    )
+
+    if flux_type == "central":
+        flux_code = 0
+    elif flux_type == "upwind":
+        flux_code = 1
+    elif flux_type in ("lf", "lax_friedrichs"):
+        flux_code = 2
+    else:
+        raise ValueError(f"unknown flux_type: {flux_type}")
+
+    # ------------------------------------------------------------
+    # Fill p_boundary_all.
+    #
+    # Prefer Numba when available.  This only handles pure ndarray work.
+    # ------------------------------------------------------------
+    if NUMBA_AVAILABLE:
+        build_p_boundary_all_numba(
+            np.asarray(q, dtype=np.float64),
+            np.asarray(EToE, dtype=np.int64),
+            np.asarray(face_nodes_M, dtype=np.int64),
+            np.asarray(face_nodes_P, dtype=np.int64),
+            np.asarray(state["vn_face"], dtype=np.float64),
+            edge_starts,
+            edge_stops,
+            int(flux_code),
+            float(alpha_lf),
+            p_boundary_all,
+        )
+    else:
+        for kM in range(K):
+            for fM in range(3):
+                kP = int(EToE[kM, fM])
+
+                if kP == kM:
+                    raise AssertionError(f"unexpected boundary face ({kM}, {fM})")
+
+                nodes_M = face_nodes_M[kM, fM]
+                nodes_P = face_nodes_P[kM, fM]
+
+                qM = q[kM, nodes_M]
+                qP = q[kP, nodes_P]
+                vn = state["vn_face"][kM, fM]
+
+                if flux_code == 0:
+                    C = 0.0
+                elif flux_code == 1:
+                    C = np.abs(vn)
+                else:
+                    C = alpha_lf * np.abs(vn)
+
+                penalty = 0.5 * (vn - C) * (qM - qP)
+                p_boundary_all[kM, engine.edge_slices[fM]] = penalty
+
+    max_abs_penalty = float(np.max(np.abs(p_boundary_all)))
+
+    # ------------------------------------------------------------
+    # Vectorized lift.
+    #
+    # Old per-element version:
+    #
+    #     lifted = engine.lift_boundary_penalty(
+    #         p_boundary,
+    #         edge_lengths=np.ones(3),
+    #     )
+    #
+    # New batched version:
+    #
+    #     lifted_all = (p_boundary_all * Wb) @ LIFT_B.T
+    # ------------------------------------------------------------
+    Wb = state["Wb"]
+    LIFT_B = state["LIFT_B"]
+    J = state["J_array"]
+
+    lifted_all = (p_boundary_all * Wb[None, :]) @ LIFT_B.T
+    surface_rhs = lifted_all / J
+
+    return {
+        "surface_rhs": surface_rhs,
+        "max_face_match_error": max_face_match_error,
+        "max_abs_penalty": max_abs_penalty,
+        "surface_mode": "local_fast",
+    }
