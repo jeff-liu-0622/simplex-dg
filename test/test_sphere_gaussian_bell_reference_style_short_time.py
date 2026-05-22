@@ -243,7 +243,29 @@ def build_reference_style_state(
 
     state["LIFT_B"] = LIFT_B
     state["Wb"] = Wb
+    # ------------------------------------------------------------
+    # Projection cache for split-compatible boundary flux.
+    #
+    # P maps nodal values to the W-projected polynomial nodal space:
+    #
+    #     P = |T| V M^{-1} V^T W
+    #
+    # Since engine.invM_modal is inverse of |T| V^T W V,
+    # this formula is consistent with the SDG projection.
+    # ------------------------------------------------------------
+    P = (
+    engine.area
+    * engine.V
+    @ engine.invM_modal
+    @ (engine.V.T * engine.w_s[None, :])
+    )
 
+    state["P"] = P
+
+    # alpha = J * u_tilde, beta = J * v_tilde
+    # These do not depend on q, so their projected traces can be cached.
+    state["alpha_proj"] = J_u @ P.T
+    state["beta_proj"] = J_v @ P.T
     return state
 
 def rate(previous_error, current_error, previous_h, current_h):
@@ -302,7 +324,7 @@ def run_reference_style_short_time_case(
             compute_sphere_rhs,
             state=state,
             flux_type="upwind",
-            surface_mode="local_fast",
+            surface_mode="split_fast",
         )
         t += dt_step
         num_steps += 1

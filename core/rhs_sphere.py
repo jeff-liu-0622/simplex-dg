@@ -43,6 +43,112 @@ if NUMBA_AVAILABLE:
                         C = alpha_lf * abs(vn)
 
                     p_boundary_all[kM, start + a] = 0.5 * (vn - C) * (qM - qP)
+if NUMBA_AVAILABLE:
+    @njit(parallel=True, cache=True)
+    def build_p_boundary_split_numba(
+        q_proj,
+        alpha_q_proj,
+        beta_q_proj,
+        alpha_proj,
+        beta_proj,
+        EToE,
+        EToF,
+        face_nodes_M,
+        face_nodes_P,
+        edge_starts,
+        edge_stops,
+        flux_code,
+        alpha_lf,
+        p_boundary_all,
+    ):
+        K = q_proj.shape[0]
+
+        for kM in prange(K):
+            for fM in range(3):
+                kP = EToE[kM, fM]
+                fP = EToF[kM, fM]
+
+                start = edge_starts[fM]
+                stop = edge_stops[fM]
+                nfp = stop - start
+
+                for a in range(nfp):
+                    iM = face_nodes_M[kM, fM, a]
+                    iP = face_nodes_P[kM, fM, a]
+
+                    qM = q_proj[kM, iM]
+                    qP = q_proj[kP, iP]
+
+                    # ------------------------------------------------
+                    # Minus-side conservative projected line flux
+                    # and projected line speed.
+                    #
+                    # face 0: F = -2 beta
+                    # face 1: F =  2(alpha + beta)
+                    # face 2: F = -2 alpha
+                    # ------------------------------------------------
+                    if fM == 0:
+                        F_cons_M = -2.0 * beta_q_proj[kM, iM]
+                        a_M = -2.0 * beta_proj[kM, iM]
+
+                    elif fM == 1:
+                        F_cons_M = 2.0 * (
+                            alpha_q_proj[kM, iM]
+                            + beta_q_proj[kM, iM]
+                        )
+                        a_M = 2.0 * (
+                            alpha_proj[kM, iM]
+                            + beta_proj[kM, iM]
+                        )
+
+                    else:
+                        F_cons_M = -2.0 * alpha_q_proj[kM, iM]
+                        a_M = -2.0 * alpha_proj[kM, iM]
+
+                    # ------------------------------------------------
+                    # Neighbor outward projected line speed.
+                    # This uses neighbor's own outward face convention.
+                    # ------------------------------------------------
+                    if fP == 0:
+                        a_P_out = -2.0 * beta_proj[kP, iP]
+
+                    elif fP == 1:
+                        a_P_out = 2.0 * (
+                            alpha_proj[kP, iP]
+                            + beta_proj[kP, iP]
+                        )
+
+                    else:
+                        a_P_out = -2.0 * alpha_proj[kP, iP]
+
+                    # Common speed in minus-side normal orientation.
+                    a_common = 0.5 * (a_M - a_P_out)
+
+                    # Split-compatible interior flux:
+                    #
+                    # F_split^- = 0.5 F_cons^- + 0.5 a^- q^-
+                    F_split_M = 0.5 * F_cons_M + 0.5 * a_M * qM
+
+                    # Numerical flux
+                    if flux_code == 0:
+                        # central
+                        F_star = 0.5 * a_common * (qM + qP)
+
+                    elif flux_code == 1:
+                        # upwind
+                        F_star = (
+                            0.5 * a_common * (qM + qP)
+                            + 0.5 * abs(a_common) * (qM - qP)
+                        )
+
+                    else:
+                        # lax-friedrichs
+                        F_star = (
+                            0.5 * a_common * (qM + qP)
+                            + 0.5 * alpha_lf * abs(a_common) * (qM - qP)
+                        )
+
+                    p_boundary_all[kM, start + a] = F_split_M - F_star
 REFERENCE_FACE_NORMALS = np.array(
     [
         [0.0, -1.0],
@@ -418,6 +524,13 @@ def compute_sphere_surface_penalty(
         alpha_lf=alpha_lf,
         face_match_tol=face_match_tol,
     )
+    if surface_mode == "split_fast":
+        return compute_sphere_surface_penalty_split_fast(
+        state,
+        flux_type=flux_type,
+        alpha_lf=alpha_lf,
+        face_match_tol=face_match_tol,
+    )
     raise ValueError(f"unknown surface_mode: {surface_mode}")
 
 def compute_sphere_surface_penalty_local(
@@ -669,4 +782,222 @@ def compute_sphere_surface_penalty_local_fast(
         "max_face_match_error": max_face_match_error,
         "max_abs_penalty": max_abs_penalty,
         "surface_mode": "local_fast",
+    }
+
+def reference_line_flux_from_alpha_beta(face_id, alpha_face, beta_face):
+    """
+    Convert alpha=J*u_tilde and beta=J*v_tilde to reference-edge line flux.
+
+    Reference triangle face convention:
+
+        face 0: s = -1       -> dr/dt =  2, ds/dt =  0
+        face 1: r + s = 0    -> dr/dt = -2, ds/dt =  2
+        face 2: r = -1       -> dr/dt =  0, ds/dt = -2
+
+    Line flux:
+
+        F_n = ds/dt * alpha - dr/dt * beta
+
+    Therefore:
+
+        face 0: F = -2 beta
+        face 1: F =  2 alpha + 2 beta
+        face 2: F = -2 alpha
+    """
+    if face_id == 0:
+        return -2.0 * beta_face
+    if face_id == 1:
+        return 2.0 * (alpha_face + beta_face)
+    if face_id == 2:
+        return -2.0 * alpha_face
+
+    raise ValueError(f"unknown face_id: {face_id}")
+
+def compute_sphere_surface_penalty_split_fast(
+    state,
+    flux_type="upwind",
+    alpha_lf=1.0,
+    face_match_tol=1.0e-12,
+):
+    """
+    Split-compatible local interface surface penalty.
+
+    This is for split-form volume RHS.
+
+    It uses:
+
+        p = F_split_minus - F_star
+
+    where
+
+        F_split_minus =
+            0.5 * F_cons_minus
+            + 0.5 * a_minus * q_minus_projected
+
+    and F_star is a single-valued numerical flux using a common speed.
+
+    The penalty assembly loop is accelerated by Numba when available.
+    """
+    engine = state["engine"]
+    EToE = state["EToE"]
+    EToF = state["EToF"]
+    q = state["q"]
+
+    face_cache = state["face_cache"]
+    face_nodes_M = face_cache["face_nodes_M"]
+    face_nodes_P = face_cache["face_nodes_P"]
+    max_face_match_error = face_cache["max_face_match_error"]
+
+    if max_face_match_error > face_match_tol:
+        raise AssertionError(
+            "projected sphere face pairing is not physically continuous: "
+            f"max face match error = {max_face_match_error:.3e}"
+        )
+
+    K = q.shape[0]
+    Nb = engine.num_boundary_nodes
+
+    p_boundary_all = np.zeros((K, Nb), dtype=q.dtype)
+
+    # ------------------------------------------------------------
+    # Project q, alpha*q, beta*q.
+    #
+    # These correspond to:
+    #
+    #     EPq
+    #     EP(alpha*q)
+    #     EP(beta*q)
+    #
+    # from the split-compatible boundary flux formula.
+    # ------------------------------------------------------------
+    P = state["P"]
+
+    q_proj = q @ P.T
+    alpha_q_proj = (state["J_u"] * q) @ P.T
+    beta_q_proj = (state["J_v"] * q) @ P.T
+
+    alpha_proj = state["alpha_proj"]
+    beta_proj = state["beta_proj"]
+
+    edge_starts = np.array(
+        [s.start for s in engine.edge_slices],
+        dtype=np.int64,
+    )
+    edge_stops = np.array(
+        [s.stop for s in engine.edge_slices],
+        dtype=np.int64,
+    )
+
+    if flux_type == "central":
+        flux_code = 0
+    elif flux_type == "upwind":
+        flux_code = 1
+    elif flux_type in ("lf", "lax_friedrichs"):
+        flux_code = 2
+    else:
+        raise ValueError(f"unknown flux_type: {flux_type}")
+
+    # ------------------------------------------------------------
+    # Assemble p_boundary_all.
+    #
+    # Numba path: pure ndarray kernel.
+    # Python fallback: same formula, easier to debug.
+    # ------------------------------------------------------------
+    if NUMBA_AVAILABLE:
+        build_p_boundary_split_numba(
+            np.asarray(q_proj, dtype=np.float64),
+            np.asarray(alpha_q_proj, dtype=np.float64),
+            np.asarray(beta_q_proj, dtype=np.float64),
+            np.asarray(alpha_proj, dtype=np.float64),
+            np.asarray(beta_proj, dtype=np.float64),
+            np.asarray(EToE, dtype=np.int64),
+            np.asarray(EToF, dtype=np.int64),
+            np.asarray(face_nodes_M, dtype=np.int64),
+            np.asarray(face_nodes_P, dtype=np.int64),
+            edge_starts,
+            edge_stops,
+            int(flux_code),
+            float(alpha_lf),
+            p_boundary_all,
+        )
+
+    else:
+        max_abs_penalty = 0.0
+
+        for kM in range(K):
+            for fM in range(3):
+                kP = int(EToE[kM, fM])
+                fP = int(EToF[kM, fM])
+
+                if kP == kM:
+                    raise AssertionError(f"unexpected boundary face ({kM}, {fM})")
+
+                nodes_M = face_nodes_M[kM, fM]
+                nodes_P = face_nodes_P[kM, fM]
+
+                qM = q_proj[kM, nodes_M]
+                qP = q_proj[kP, nodes_P]
+
+                F_cons_M = reference_line_flux_from_alpha_beta(
+                    fM,
+                    alpha_q_proj[kM, nodes_M],
+                    beta_q_proj[kM, nodes_M],
+                )
+
+                a_M = reference_line_flux_from_alpha_beta(
+                    fM,
+                    alpha_proj[kM, nodes_M],
+                    beta_proj[kM, nodes_M],
+                )
+
+                a_P_out = reference_line_flux_from_alpha_beta(
+                    fP,
+                    alpha_proj[kP, nodes_P],
+                    beta_proj[kP, nodes_P],
+                )
+
+                a_common = 0.5 * (a_M - a_P_out)
+
+                F_split_M = 0.5 * F_cons_M + 0.5 * a_M * qM
+
+                if flux_code == 0:
+                    F_star = 0.5 * a_common * (qM + qP)
+
+                elif flux_code == 1:
+                    F_star = (
+                        0.5 * a_common * (qM + qP)
+                        + 0.5 * np.abs(a_common) * (qM - qP)
+                    )
+
+                else:
+                    F_star = (
+                        0.5 * a_common * (qM + qP)
+                        + 0.5 * alpha_lf * np.abs(a_common) * (qM - qP)
+                    )
+
+                penalty = F_split_M - F_star
+                p_boundary_all[kM, engine.edge_slices[fM]] = penalty
+
+                max_abs_penalty = max(
+                    max_abs_penalty,
+                    float(np.max(np.abs(penalty))),
+                )
+
+    max_abs_penalty = float(np.max(np.abs(p_boundary_all)))
+
+    # ------------------------------------------------------------
+    # Vectorized lift.
+    # ------------------------------------------------------------
+    Wb = state["Wb"]
+    LIFT_B = state["LIFT_B"]
+    J = state["J_array"]
+
+    lifted_all = (p_boundary_all * Wb[None, :]) @ LIFT_B.T
+    surface_rhs = lifted_all / J
+
+    return {
+        "surface_rhs": surface_rhs,
+        "max_face_match_error": max_face_match_error,
+        "max_abs_penalty": max_abs_penalty,
+        "surface_mode": "split_fast",
     }
