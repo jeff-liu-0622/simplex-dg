@@ -42,6 +42,60 @@ TABLE2 = {
     ]
 
 }
+
+
+def get_face_quadrature(N):
+    """
+    Build an independent Gauss--Legendre quadrature rule on the three
+    reference-triangle edges.
+
+    The reference triangle is
+
+        (-1,-1), (1,-1), (-1,1).
+
+    Edge ordering and orientation are
+
+        edge 1: s = -1,      (-1,-1) -> (1,-1)
+        edge 2: r + s = 0,   (1,-1)  -> (-1,1)
+        edge 3: r = -1,      (-1,1)  -> (-1,-1).
+
+    N+1 Gauss points integrate one-dimensional polynomials through
+    degree 2N+1.  The returned weights are normalized to sum to one,
+    because physical/reference edge lengths are multiplied separately
+    by the SDG boundary quadrature machinery.
+
+    Returns
+    -------
+    dict with
+        t:      shape (N+1,), Gauss coordinates on [-1,1]
+        w_e:    shape (N+1,), normalized weights, sum(w_e)=1
+        r_face: shape (3,N+1)
+        s_face: shape (3,N+1)
+    """
+    if N < 0:
+        raise ValueError("Polynomial degree N must be >= 0.")
+
+    t, w = np.polynomial.legendre.leggauss(N + 1)
+    w_e = 0.5 * w
+
+    r_face = np.vstack([
+        t,
+        -t,
+        -np.ones_like(t),
+    ])
+    s_face = np.vstack([
+        -np.ones_like(t),
+        t,
+        -t,
+    ])
+
+    return {
+        "t": t,
+        "w_e": w_e,
+        "r_face": r_face,
+        "s_face": s_face,
+    }
+
 def get_uniform_nodes(N):
     """
     產生 N 階均勻分佈點 (Equidistant Nodes / 也就是均勻的 Table 2)。
